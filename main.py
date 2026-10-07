@@ -116,23 +116,15 @@ def draw_results(
     frame,
     left_line,
     right_line,
+    raw_curvature,
     smoothed_curvature,
     status,
     direction=None
 ):
     out = frame.copy()
 
-    # _draw_line(
-    #     out,
-    #     left_line,
-    #     COLOR_LEFT
-    # )
-
-    # _draw_line(
-    #     out,
-    #     right_line,
-    #     COLOR_RIGHT
-    # )
+    # Old straight-line visualization disabled.
+    # Polynomial curves are drawn before this function.
 
     if (
         left_line is not None
@@ -178,6 +170,10 @@ def draw_results(
     y0 = int(40 * scale)
     step = int(38 * scale)
 
+    # -------------------------------------------------
+    # Road status
+    # -------------------------------------------------
+
     cv2.putText(
         out,
         f"Road Status: {status}",
@@ -188,34 +184,66 @@ def draw_results(
         thick + 1
     )
 
-    metric_text = (
+    # -------------------------------------------------
+    # Raw curvature
+    # -------------------------------------------------
+
+    raw_text = (
+        "n/a"
+        if raw_curvature is None
+        else f"{raw_curvature:.2f}"
+    )
+
+    cv2.putText(
+        out,
+        f"Raw Curvature: {raw_text}",
+        (x0, y0 + step),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7 * scale,
+        (0, 0, 0),
+        thick
+    )
+
+    # -------------------------------------------------
+    # Smoothed curvature
+    # -------------------------------------------------
+
+    smooth_text = (
         "n/a"
         if smoothed_curvature is None
         else f"{smoothed_curvature:.2f}"
     )
 
     cv2.putText(
-    out,
-    f"Smoothed Curvature: {metric_text}",
-    (x0, y0 + step),
-    cv2.FONT_HERSHEY_SIMPLEX,
-    0.8 * scale,
-    (255, 255, 255),
-    thick
-    )   
+        out,
+        f"Smoothed Curvature: {smooth_text}",
+        (x0, y0 + 2 * step),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7 * scale,
+        (0, 0, 0),
+        thick
+    )
+
+    # -------------------------------------------------
+    # Metric description
+    # -------------------------------------------------
 
     cv2.putText(
         out,
         "(approx. image-space metric)",
         (
             x0,
-            y0 + 2 * step - int(8 * scale)
+            y0 + 3 * step
         ),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5 * scale,
-        (200, 200, 200),
+        (0, 0, 0),
         max(1, thick - 1)
     )
+
+    # -------------------------------------------------
+    # Turn direction
+    # -------------------------------------------------
 
     if (
         direction
@@ -229,7 +257,7 @@ def draw_results(
             f"Bends: {direction}",
             (
                 x0,
-                y0 + 3 * step - int(8 * scale)
+                y0 + 4 * step
             ),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8 * scale,
@@ -328,6 +356,7 @@ def process_frame(frame,smoother):
         output,
         left_line,
         right_line,
+        curvature,
         smoothed_curvature,
         status,
         direction
@@ -384,6 +413,30 @@ def process_frame(frame,smoother):
                 COLOR_RIGHT,
                 2
             )
+
+        # -------------------------------------------------
+        # Draw actual points used for polynomial fitting
+        # -------------------------------------------------
+
+        if left_points is not None:
+            for x, y in left_points:
+                cv2.circle(
+                    hough_vis,
+                    (int(x), int(y)),
+                    3,
+                    COLOR_LEFT,
+                    -1
+                )
+
+        if right_points is not None:
+            for x, y in right_points:
+                cv2.circle(
+                    hough_vis,
+                    (int(x), int(y)),
+                    3,
+                    COLOR_RIGHT,
+                    -1
+                )
 
         # Draw all raw Hough lines
         for x1, y1, x2, y2 in frame_lines:
@@ -522,7 +575,7 @@ def main():
                         cap.get(
                             cv2.CAP_PROP_FPS
                         )
-                        or 30.0
+                    
                     )
 
                     # Preserve original behavior:
@@ -531,10 +584,8 @@ def main():
 
                     writer = cv2.VideoWriter(
                         args.save,
-                        cv2.VideoWriter_fourcc(
-                            *"mp4v"
-                        ),
-                        slow_fps,
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        fps,
                         (w, h)
                     )
 

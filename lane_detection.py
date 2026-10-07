@@ -72,6 +72,48 @@ def separate_lines(lines, frame_width):
 
     return left, right
 
+def get_lane_points(lines, points_per_segment=10):
+    """
+    Convert Hough line segments into a denser set of points.
+
+    Instead of using only the two endpoints of each Hough
+    segment, interpolate points along each segment.
+
+    Returns:
+        numpy.ndarray of shape (N, 2)
+        Each row is [x, y].
+    """
+
+    if not lines:
+        return None
+
+    points = []
+
+    for line in lines:
+        x1, y1, x2, y2 = line
+
+        xs = np.linspace(
+            x1,
+            x2,
+            points_per_segment
+        )
+
+        ys = np.linspace(
+            y1,
+            y2,
+            points_per_segment
+        )
+
+        for x, y in zip(xs, ys):
+            points.append((x, y))
+
+    if len(points) < 3:
+        return None
+
+    return np.array(
+        points,
+        dtype=np.float32
+    )
 
 def fit_lane_line(lines, frame_height):
     """Fit a single line to one side of the road."""

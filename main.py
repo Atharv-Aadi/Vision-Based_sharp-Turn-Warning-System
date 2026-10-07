@@ -10,6 +10,7 @@ import sys
 import cv2
 import numpy as np
 
+
 from config import (
     VIDEO_PATH,
     DEBUG,
@@ -37,6 +38,7 @@ from curvature import (
     calculate_curvature,
 )
 
+from smoothing import TemporalSmoother
 from warning import classify_turn
 from vehicle_detection import VehicleDetector
 
@@ -60,7 +62,7 @@ def draw_results(
     frame,
     left_line,
     right_line,
-    curvature,
+    smoothed_curvature,
     status,
     direction=None
 ):
@@ -134,19 +136,19 @@ def draw_results(
 
     metric_text = (
         "n/a"
-        if curvature is None
-        else f"{curvature:.2f}"
+        if smoothed_curvature is None
+        else f"{smoothed_curvature:.2f}"
     )
 
     cv2.putText(
-        out,
-        f"Curvature Metric: {metric_text}",
-        (x0, y0 + step),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8 * scale,
-        (255, 255, 255),
-        thick
-    )
+    out,
+    f"Smoothed Curvature: {metric_text}",
+    (x0, y0 + step),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.8 * scale,
+    (255, 255, 255),
+    thick
+    )   
 
     cv2.putText(
         out,
@@ -184,7 +186,7 @@ def draw_results(
     return out
 
 
-def process_frame(frame):
+def process_frame(frame,smoother):
     height, width = frame.shape[:2]
 
     # Original pipeline: ROI -> preprocessing -> polygon mask.
@@ -228,19 +230,21 @@ def process_frame(frame):
 
     # Original center-shift curvature metric.
     curvature, direction = calculate_curvature(
-        left_line,
-        right_line,
-        width,
-        height
+    left_line,
+    right_line,
+    width,
+    height
     )
 
-    status = classify_turn(curvature)
+    smoothed_curvature = smoother.update(curvature)
+
+    status = classify_turn(smoothed_curvature)
 
     output = draw_results(
         frame,
         left_line,
         right_line,
-        curvature,
+        smoothed_curvature,
         status,
         direction
     )
@@ -382,6 +386,8 @@ def main():
 
     args = parse_args()
 
+    smoother = TemporalSmoother(window_size=5)
+
     if args.no_debug:
         DEBUG = False
 
@@ -410,7 +416,8 @@ def main():
             frame_count += 1
 
             output, debug = process_frame(
-                frame
+                frame,
+                smoother
             )
 
             if args.save:

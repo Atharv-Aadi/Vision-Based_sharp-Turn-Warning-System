@@ -31,11 +31,13 @@ from lane_detection import (
     detect_lines,
     separate_lines,
     fit_lane_line,
+    get_lane_points,
 )
 
 from curvature import (
     get_road_center,
     calculate_curvature,
+    calculate_polynomial_curvature,
 )
 
 from smoothing import TemporalSmoother
@@ -57,6 +59,58 @@ def _draw_line(img, line, color, thickness=4):
         thickness
     )
 
+def _draw_polynomial(
+    img,
+    coefficients,
+    y_start,
+    y_end,
+    color,
+    thickness=4
+):
+    """
+    Draw x = a*y^2 + b*y + c on the image.
+    """
+
+    if coefficients is None:
+        return
+
+    a, b, c = coefficients
+
+    points = []
+
+    for y in np.linspace(
+        y_start,
+        y_end,
+        100
+    ):
+
+        x = (
+            a * y**2
+            + b * y
+            + c
+        )
+
+        x = int(round(x))
+        y = int(round(y))
+
+        if (
+            0 <= x < img.shape[1]
+            and 0 <= y < img.shape[0]
+        ):
+            points.append(
+                (x, y)
+            )
+
+    if len(points) >= 2:
+
+        cv2.polylines(
+            img,
+            [np.array(points)],
+            False,
+            color,
+            thickness
+        )
+
 
 def draw_results(
     frame,
@@ -68,17 +122,17 @@ def draw_results(
 ):
     out = frame.copy()
 
-    _draw_line(
-        out,
-        left_line,
-        COLOR_LEFT
-    )
+    # _draw_line(
+    #     out,
+    #     left_line,
+    #     COLOR_LEFT
+    # )
 
-    _draw_line(
-        out,
-        right_line,
-        COLOR_RIGHT
-    )
+    # _draw_line(
+    #     out,
+    #     right_line,
+    #     COLOR_RIGHT
+    # )
 
     if (
         left_line is not None
@@ -189,7 +243,8 @@ def draw_results(
 def process_frame(frame,smoother):
     height, width = frame.shape[:2]
 
-    # Original pipeline: ROI -> preprocessing -> polygon mask.
+    # Original pipeline:
+    # ROI -> preprocessing -> polygon mask
     roi, y_offset, polygon = get_roi(frame)
 
     edges = apply_polygon_mask(
@@ -197,10 +252,10 @@ def process_frame(frame,smoother):
         polygon
     )
 
-    # Original Hough detection.
+    # Hough detection
     roi_lines = detect_lines(edges)
 
-    # Shift ROI coordinates back into full-frame coordinates.
+    # Shift ROI coordinates back into full-frame coordinates
     frame_lines = [
         (
             x1,
@@ -211,37 +266,66 @@ def process_frame(frame,smoother):
         for x1, y1, x2, y2 in roi_lines
     ]
 
-    # Original left/right separation.
-    left_segs, right_segs = separate_lines(
+    # Separate left and right Hough segments
+    left_lines, right_lines = separate_lines(
         frame_lines,
-        width
+        frame.shape[1]
     )
 
-    # Original linear fitting.
+    # NEW:
+    # Extract actual Hough points for future polynomial fitting
+    left_points = get_lane_points(left_lines)
+    right_points = get_lane_points(right_lines)
+
+    # Existing straight-line fitting
     left_line = fit_lane_line(
-        left_segs,
-        height
+        left_lines,
+        frame.shape[0]
     )
 
     right_line = fit_lane_line(
-        right_segs,
-        height
+        right_lines,
+        frame.shape[0]
     )
 
-    # Original center-shift curvature metric.
-    curvature, direction = calculate_curvature(
-    left_line,
-    right_line,
-    width,
-    height
+    (
+        curvature,
+        direction,
+        left_coeff,
+        right_coeff
+    ) = calculate_polynomial_curvature(
+        left_points,
+        right_points,
+        width,
+        height
     )
 
     smoothed_curvature = smoother.update(curvature)
 
     status = classify_turn(smoothed_curvature)
 
+    output = frame.copy()
+
+    _draw_polynomial(
+        output,
+        left_coeff,
+        int(height * 0.40),
+        height,
+        COLOR_LEFT,
+        4
+    )
+
+    _draw_polynomial(
+        output,
+        right_coeff,
+        int(height * 0.40),
+        height,
+        COLOR_RIGHT,
+        4
+    )
+
     output = draw_results(
-        frame,
+        output,
         left_line,
         right_line,
         smoothed_curvature,
@@ -252,6 +336,7 @@ def process_frame(frame,smoother):
     debug = {}
 
     if DEBUG:
+
         roi_vis = roi.copy()
 
         cv2.polylines(
@@ -280,7 +365,8 @@ def process_frame(frame,smoother):
             2
         )
 
-        for x1, y1, x2, y2 in left_segs:
+        # Draw accepted LEFT Hough segments
+        for x1, y1, x2, y2 in left_lines:
             cv2.line(
                 hough_vis,
                 (x1, y1),
@@ -289,7 +375,8 @@ def process_frame(frame,smoother):
                 2
             )
 
-        for x1, y1, x2, y2 in right_segs:
+        # Draw accepted RIGHT Hough segments
+        for x1, y1, x2, y2 in right_lines:
             cv2.line(
                 hough_vis,
                 (x1, y1),
@@ -298,6 +385,7 @@ def process_frame(frame,smoother):
                 2
             )
 
+        # Draw all raw Hough lines
         for x1, y1, x2, y2 in frame_lines:
             cv2.line(
                 hough_vis,
@@ -345,8 +433,14 @@ def process_frame(frame,smoother):
             "4 Fitted boundaries": fitted_vis,
         }
 
-    return output, debug
+    print(
+        f"Curvature: {curvature:.6f} | "
+        f"Direction: {direction}"
+        if curvature is not None
+        else "Curvature: None"
+    )
 
+    return output, debug
 
 def parse_args():
     p = argparse.ArgumentParser(

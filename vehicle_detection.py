@@ -1,13 +1,4 @@
-"""Vehicle-detection placeholder.
-
-The original supplied prototype does not contain YOLO/vehicle masking.
-This module is intentionally a no-op so the refactored project does not
-change the original algorithm.
-
-YOLO can be integrated here later without modifying the lane/curvature
-baseline.
-"""
-
+"""Placeholder for future vehicle masking (not part of 50% milestone)."""
 
 class VehicleDetector:
     def get_vehicle_mask(self, frame):

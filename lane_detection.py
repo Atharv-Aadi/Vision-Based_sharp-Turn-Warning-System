@@ -1,150 +1,103 @@
-"""Hough detection, left/right separation, and line fitting."""
+"""Level 1 road-boundary detection using filtered Hough segments."""
 import cv2
 import numpy as np
 
 from config import (
-    HOUGH_RHO,
-    HOUGH_THETA,
-    HOUGH_THRESHOLD,
-    MIN_LINE_LENGTH_RATIO,
-    MAX_LINE_GAP_RATIO,
-    SLOPE_THRESHOLD,
-    CENTER_MARGIN_RATIO,
-    MIN_SEGMENTS_PER_SIDE,
-    LINE_TOP_RATIO,
+    HOUGH_RHO, HOUGH_THETA, HOUGH_THRESHOLD,
+    MIN_LINE_LENGTH_RATIO, MAX_LINE_GAP_RATIO,
+    MIN_ABS_SLOPE, MAX_ABS_SLOPE,
+    CENTER_MARGIN_RATIO, MIN_VERTICAL_SPAN_RATIO,
+    MIN_SEGMENTS_PER_SIDE, MIN_SIDE_POINTS, LINE_TOP_RATIO,
 )
 
 
 def detect_lines(edges):
-    """Find line segments using HoughLinesP."""
     h = edges.shape[0]
-
     lines = cv2.HoughLinesP(
-        edges,
-        HOUGH_RHO,
-        HOUGH_THETA,
-        HOUGH_THRESHOLD,
-        minLineLength=max(
-            5,
-            int(h * MIN_LINE_LENGTH_RATIO)
-        ),
-        maxLineGap=max(
-            2,
-            int(h * MAX_LINE_GAP_RATIO)
-        )
+        edges, HOUGH_RHO, HOUGH_THETA, HOUGH_THRESHOLD,
+        minLineLength=max(5, int(h * MIN_LINE_LENGTH_RATIO)),
+        maxLineGap=max(2, int(h * MAX_LINE_GAP_RATIO)),
     )
-
     if lines is None:
         return []
-
     lines = np.asarray(lines).reshape(-1, 4)
-
-    return [
-        (int(x1), int(y1), int(x2), int(y2))
-        for x1, y1, x2, y2 in lines
-    ]
+    return [(int(x1), int(y1), int(x2), int(y2)) for x1, y1, x2, y2 in lines]
 
 
-def separate_lines(lines, frame_width):
-    """Put detected segments into left and right groups."""
-    left = []
-    right = []
+def _features(line):
+    x1, y1, x2, y2 = line
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0:
+        return None
+    return float(np.hypot(dx, dy)), dy / dx, abs(dy)
 
-    center_x = frame_width / 2
+
+def _useful(line, frame_height):
+    f = _features(line)
+    if f is None:
+        return False
+    _, slope, vspan = f
+    return (
+        MIN_ABS_SLOPE <= abs(slope) <= MAX_ABS_SLOPE
+        and vspan >= frame_height * MIN_VERTICAL_SPAN_RATIO
+    )
+
+
+def separate_lines(lines, frame_width, frame_height):
+    left, right = [], []
+    center = frame_width / 2.0
     margin = frame_width * CENTER_MARGIN_RATIO
 
-    for x1, y1, x2, y2 in lines:
-        if x2 == x1:
+    for line in lines:
+        if not _useful(line, frame_height):
             continue
-
+        x1, y1, x2, y2 = line
         slope = (y2 - y1) / (x2 - x1)
+        mid_x = (x1 + x2) / 2.0
 
-        if abs(slope) <= SLOPE_THRESHOLD:
-            continue
-
-        mid_x = (x1 + x2) / 2
-
-        if slope < 0 and mid_x < center_x + margin:
-            left.append((x1, y1, x2, y2))
-
-        elif slope > 0 and mid_x > center_x - margin:
-            right.append((x1, y1, x2, y2))
+        if slope < 0 and mid_x < center + margin:
+            left.append(line)
+        elif slope > 0 and mid_x > center - margin:
+            right.append(line)
 
     return left, right
 
+
 def get_lane_points(lines, points_per_segment=10):
-    """
-    Convert Hough line segments into a denser set of points.
-
-    Instead of using only the two endpoints of each Hough
-    segment, interpolate points along each segment.
-
-    Returns:
-        numpy.ndarray of shape (N, 2)
-        Each row is [x, y].
-    """
-
     if not lines:
         return None
-
     points = []
-
-    for line in lines:
-        x1, y1, x2, y2 = line
-
-        xs = np.linspace(
-            x1,
-            x2,
-            points_per_segment
-        )
-
-        ys = np.linspace(
-            y1,
-            y2,
-            points_per_segment
-        )
-
-        for x, y in zip(xs, ys):
-            points.append((x, y))
-
-    if len(points) < 3:
+    for x1, y1, x2, y2 in lines:
+        xs = np.linspace(x1, x2, points_per_segment)
+        ys = np.linspace(y1, y2, points_per_segment)
+        points.extend(zip(xs, ys))
+    if len(points) < MIN_SIDE_POINTS:
         return None
+    return np.asarray(points, dtype=np.float64)
 
-    return np.array(
-        points,
-        dtype=np.float32
-    )
 
 def fit_lane_line(lines, frame_height):
-    """Fit a single line to one side of the road."""
     if len(lines) < MIN_SEGMENTS_PER_SIDE:
         return None
 
-    xs = []
-    ys = []
+    xs, ys, weights = [], [], []
+    for line in lines:
+        x1, y1, x2, y2 = line
+        length = float(np.hypot(x2 - x1, y2 - y1))
+        xs.extend([x1, x2])
+        ys.extend([y1, y2])
+        weights.extend([length, length])
 
-    for x1, y1, x2, y2 in lines:
-        xs += [x1, x2]
-        ys += [y1, y2]
-
-    xs = np.array(xs, dtype=float)
-    ys = np.array(ys, dtype=float)
-
+    xs, ys, weights = map(lambda a: np.asarray(a, dtype=float), (xs, ys, weights))
     if np.ptp(ys) < 1:
         return None
 
-    # Preserve original algorithm: fit x against y with degree 1.
-    a, b = np.polyfit(ys, xs, 1)
+    try:
+        a, b = np.polyfit(ys, xs, 1, w=weights)
+    except (np.linalg.LinAlgError, ValueError):
+        return None
 
     y_bottom = frame_height - 1
     y_top = int(frame_height * LINE_TOP_RATIO)
-
-    x_bottom = a * y_bottom + b
-    x_top = a * y_top + b
-
-    return (
-        x_bottom,
-        float(y_bottom),
-        x_top,
-        float(y_top)
-    )
+    return (float(a * y_bottom + b), float(y_bottom),
+            float(a * y_top + b), float(y_top))

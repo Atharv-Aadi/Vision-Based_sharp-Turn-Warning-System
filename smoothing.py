@@ -1,113 +1,56 @@
-"""
-Temporal smoothing for road curvature estimation.
-
-This module reduces frame-to-frame fluctuations in the curvature
-value produced by the curvature estimation module.
-"""
-
+"""Temporal smoothing for curvature/radius values."""
 from collections import deque
+import numpy as np
+
+from config import (
+    SMOOTHING_WINDOW,
+    MEDIAN_WINDOW,
+    EMA_ALPHA,
+    MAX_RADIUS_JUMP_RATIO,
+)
 
 
 class TemporalSmoother:
-    """
-    Maintains a rolling history of curvature values and returns
-    a smoothed curvature using a moving average.
-    """
+    """Median + bounded EMA smoothing for frame-to-frame radius."""
 
-    def __init__(self, window_size=5):
-        """
-        Create a temporal smoother.
+    def __init__(self, window_size=SMOOTHING_WINDOW, median_window=MEDIAN_WINDOW):
+        self.window_size = max(1, int(window_size))
+        self.median_window = max(1, min(int(median_window), self.window_size))
+        self.history = deque(maxlen=self.window_size)
+        self.ema = None
 
-        Parameters
-        ----------
-        window_size : int
-            Number of recent curvature values used for smoothing.
-        """
-
-        if window_size < 1:
-            raise ValueError("window_size must be at least 1")
-
-        self.window_size = window_size
-        self.history = deque(maxlen=window_size)
-
-    def update(self, curvature):
-        """
-        Add a new curvature value and return the smoothed value.
-
-        Parameters
-        ----------
-        curvature : float or None
-            Curvature value obtained from the curvature estimator.
-
-        Returns
-        -------
-        float or None
-            Smoothed curvature value.
-        """
-
-        # If curvature could not be calculated for this frame,
-        # do not add anything to the history.
-        if curvature is None:
+    def update(self, radius):
+        if radius is None:
             return self.get_smoothed_value()
 
-        # Store the new curvature value.
-        self.history.append(float(curvature))
+        radius = float(radius)
+        if not np.isfinite(radius):
+            return self.get_smoothed_value()
 
-        # Calculate moving average.
-        return sum(self.history) / len(self.history)
+        # Prevent a single bad frame from moving the output wildly.
+        if self.ema is not None:
+            limit = max(self.ema * MAX_RADIUS_JUMP_RATIO, 150.0)
+            lower = self.ema - limit
+            upper = self.ema + limit
+            radius = float(np.clip(radius, lower, upper))
+
+        self.history.append(radius)
+        recent = list(self.history)[-self.median_window:]
+        median = float(np.median(recent))
+
+        if self.ema is None:
+            self.ema = median
+        else:
+            self.ema = EMA_ALPHA * median + (1.0 - EMA_ALPHA) * self.ema
+
+        return self.ema
 
     def get_smoothed_value(self):
-        """
-        Return the current smoothed curvature.
-
-        Returns
-        -------
-        float or None
-            Current moving average, or None if no values exist.
-        """
-
-        if not self.history:
-            return None
-
-        return sum(self.history) / len(self.history)
+        return self.ema
 
     def reset(self):
-        """
-        Clear all stored curvature values.
-        """
-
         self.history.clear()
+        self.ema = None
 
     def get_history(self):
-        """
-        Return the current curvature history.
-
-        Returns
-        -------
-        list
-            List of recent curvature values.
-        """
-
         return list(self.history)
-
-
-# Test the temporal smoother when this file is run directly.
-if __name__ == "__main__":
-    smoother = TemporalSmoother(window_size=5)
-
-    test_values = [
-        0.10,
-        0.20,
-        0.30,
-        0.40,
-        0.50,
-        0.60
-    ]
-
-    for value in test_values:
-        smoothed = smoother.update(value)
-
-        print(
-            f"Raw: {value:.2f}  "
-            f"Smoothed: {smoothed:.2f}"
-        )
